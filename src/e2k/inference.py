@@ -269,8 +269,19 @@ class S2S:
 
 
 class BaseE2K:
-    def __init__(self, name: str, max_len: int = 16):
-        data = np.load(get_asset_path(name), allow_pickle=True)
+    def __init__(self, name: str, max_len: int = 16, model_path: Optional[str] = None):
+        """
+        Args:
+            name: アセット名 (model-c2k.npz など)
+            max_len: 最大生成長
+            model_path: モデルファイルのパス (指定された場合、name は無視される)
+        """
+        if model_path is not None:
+            # 指定されたパスから直接ロード
+            data = np.load(model_path, allow_pickle=True)
+        else:
+            # 従来通りアセットからロード
+            data = np.load(get_asset_path(name), allow_pickle=True)
         self.s2s = S2S(data, max_len)
         self.in_table = {c: i for i, c in enumerate(self.s2s.in_table)}
         self.out_table = self.s2s.out_table
@@ -319,13 +330,23 @@ def get_asset_path(filename) -> str:
 
 
 class P2K(BaseE2K):
-    def __init__(self, max_len: int = 16):
-        super().__init__("model-p2k.npz", max_len)
+    def __init__(self, max_len: int = 16, model_path: Optional[str] = None):
+        """
+        Args:
+            max_len: 最大生成長
+            model_path: モデルファイルのパス（指定された場合、デフォルトのアセットは使用しない）
+        """
+        super().__init__("model-p2k.npz", max_len, model_path=model_path)
 
 
 class C2K(BaseE2K):
-    def __init__(self, max_len: int = 16):
-        super().__init__("model-c2k.npz", max_len)
+    def __init__(self, max_len: int = 16, model_path: Optional[str] = None):
+        """
+        Args:
+            max_len: 最大生成長
+            model_path: モデルファイルのパス（指定された場合、デフォルトのアセットは使用しない）
+        """
+        super().__init__("model-c2k.npz", max_len, model_path=model_path)
 
 
 class AccentPredictor:
@@ -455,7 +476,7 @@ class NGramCollection:
             return sum(w * s for w, s in zip(self.weights, scores))
         else:
             return st.mean(scores)
-    
+
     def as_is(self, word: str) -> str:
         cleaned = [c for c in word if c in self.spell_table]
         return "".join(self.spell_table[c] for c in cleaned)
