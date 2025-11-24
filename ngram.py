@@ -8,6 +8,7 @@ import statistics as st
 import zipfile
 from collections import defaultdict
 from string import ascii_lowercase
+from typing import cast
 
 
 VALID_CHARS = list(set(ascii_lowercase + "$^-'"))  # valid characters in the n-gram model, & for placeholder
@@ -73,16 +74,16 @@ class NGramCollection:
         }
         return json.dumps(ser, indent=None, ensure_ascii=False)
 
-    def deserialize(self, ser: str):
+    def deserialize(self, ser_str: str):
         """
         Deserialize the model from a json string.
         """
-        ser = json.loads(ser)
-        self.weights = ser["weights"]  # pyright: ignore[reportArgumentType]
-        self.threshold = ser["threshold"]  # pyright: ignore[reportArgumentType]
-        valid_chars = ser["valid_chars"]  # pyright: ignore[reportArgumentType]
-        models = ser["models"]  # pyright: ignore[reportArgumentType]
-        self.models = {NGramModel(int(k), v, valid_chars) for k, v in models.items()}  # pyright: ignore[reportAttributeAccessIssue]
+        ser = json.loads(ser_str)
+        self.weights = cast(list[float] | None, ser["weights"])
+        self.threshold = cast(float, ser["threshold"])
+        valid_chars = cast(str, ser["valid_chars"])
+        models = cast(dict[str, dict[str, float]], ser["models"])
+        self.models = [NGramModel(int(k), v, valid_chars) for k, v in models.items()]
 
 
 class NGramModel:

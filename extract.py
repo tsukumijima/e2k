@@ -50,17 +50,11 @@ def extract_wiki(path) -> dict[str, list[str]]:
                 en_word = en_word.lower().strip()
                 # the en_re will match whitespace, we filter out those
                 # too short or too long
-                if (
-                    len(en_word) > 20
-                    or len(en_word) < 2
-                    or any([c not in ascii_entries for c in en_word])
-                ):
+                if len(en_word) > 20 or len(en_word) < 2 or any([c not in ascii_entries for c in en_word]):
                     continue
                 if en_word:
                     katakana_dict[en_word].append(word)
-    print(
-        f"Extracted {len(katakana_dict)} katakana words from the Japanese Wiktionary."
-    )
+    print(f"Extracted {len(katakana_dict)} katakana words from the Japanese Wiktionary.")
     return katakana_dict
 
 
@@ -122,9 +116,7 @@ def extract_jmdict(path) -> dict[str, list[str]]:
     return katakana_dict
 
 
-def post_processing(
-    wiki_dict: dict[str, list[str]], jmdict_dict: dict[str, list[str]]
-) -> dict[str, list[str]]:
+def post_processing(wiki_dict: dict[str, list[str]], jmdict_dict: dict[str, list[str]]) -> dict[str, list[str]]:
     global kata
     katakana_dict = defaultdict(list)
     # combine the two dictionaries
@@ -162,14 +154,14 @@ class Welford:
         return (self.S / (self.k - 1)) ** 0.5
 
 
-def filter_outliers(dict: dict[str, list[str]]) -> dict[str, list[str]]:
+def filter_outliers(katakana_dict: dict[str, list[str]]) -> dict[str, list[str]]:
     # calculates the mean and std of the length ratio of the katakana words / English words
     # and filters out the outliers out side of mean \pm 2 * std
     # it's because katakana dict sometimes contain short-hand katakana words
     # like 「パソコン」 for "personal computer"
     welford = Welford()
     entries = 0
-    for en_word, katakana_words in dict.items():
+    for en_word, katakana_words in katakana_dict.items():
         for katakana_word in katakana_words:
             welford.update(len(katakana_word) / len(en_word))
             entries += 1
@@ -178,7 +170,7 @@ def filter_outliers(dict: dict[str, list[str]]) -> dict[str, list[str]]:
     print(f"Mean: {mean}, Std: {std}")
     new_dict = {}
     new_entries = 0
-    for en_word, katakana_words in dict.items():
+    for en_word, katakana_words in katakana_dict.items():
         n_katakana_words = []
         for katakana_word in katakana_words:
             ratio = len(katakana_word) / len(en_word)
@@ -187,9 +179,7 @@ def filter_outliers(dict: dict[str, list[str]]) -> dict[str, list[str]]:
                 new_entries += 1
         if len(n_katakana_words) > 0:
             new_dict[en_word] = n_katakana_words
-    print(
-        f"Filtered {entries - new_entries} outliers; final katakanas: {new_entries}; final entries: {len(new_dict)}"
-    )
+    print(f"Filtered {entries - new_entries} outliers; final katakanas: {new_entries}; final entries: {len(new_dict)}")
     return new_dict
 
 
@@ -209,9 +199,4 @@ if __name__ == "__main__":
     # save as jsonl
     with open("vendor/katakana_dict.jsonl", "w") as f:
         for en_word, katakana_words in katakana_dict.items():
-            f.write(
-                json.dumps(
-                    {"word": en_word, "kata": katakana_words}, ensure_ascii=False
-                )
-                + "\n"
-            )
+            f.write(json.dumps({"word": en_word, "kata": katakana_words}, ensure_ascii=False) + "\n")

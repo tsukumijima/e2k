@@ -95,12 +95,15 @@ def main():
 
     # モデルサイズを推定（重みの形状から）
     dim = 0
-    if hasattr(model, "s2s"):
+    try:
         # encoderの重みから次元数を推定
-        encoder_weight = model.s2s.encoder.cell.ih.weight
-        if encoder_weight is not None:
-            dim = encoder_weight.shape[-1]
-            print(f"Estimated model dimension: {dim}")
+        if hasattr(model, "s2s"):
+            encoder_weight = model.s2s.encoder.cell.ih.weight
+            if encoder_weight is not None:
+                dim = encoder_weight.shape[-1]
+                print(f"Estimated model dimension: {dim}")
+    except AttributeError:
+        print("Could not estimate model dimension (encoder weights not accessible)")
 
     # ベンチマーク実行
     avg_time, ips = benchmark_model(model, test_words, args.iterations)
@@ -118,4 +121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
