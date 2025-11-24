@@ -3,15 +3,15 @@
 モデルサイズが256→512に増えた場合の推論速度への影響を測定する
 """
 
-import time
-from typing import List
 import argparse
+import time
+
 from tqdm import tqdm
 
 from src.e2k.inference import C2K, P2K
 
 
-def benchmark_model(model, test_words: List[str], num_iterations: int = 1000):
+def benchmark_model(model, test_words: list[str], num_iterations: int = 1000):
     """
     モデルの推論速度をベンチマークする
 

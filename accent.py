@@ -1,11 +1,11 @@
 import csv
-import torch
 
-from torch import nn, Tensor
-from torch.utils.data import Dataset, DataLoader, random_split
+import torch
+from torch import Tensor, nn
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import ExponentialLR
+from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.tensorboard import SummaryWriter
 from torcheval.metrics import MulticlassAccuracy
 
 from hp import kanas
@@ -64,7 +64,7 @@ class AccentDataset(Dataset):
 
 def collate_fn(batch):
     ph_idx, accent_core, accent_length = zip(*batch)
-    ph_idx = pad_sequence(ph_idx, padding_value=0, batch_first=True)
+    ph_idx = pad_sequence(ph_idx, padding_value=0, batch_first=True)  # pyright: ignore[reportArgumentType]
     accent_core = torch.stack(accent_core)
     accent_length = torch.stack(accent_length)
     accent = accent_core / accent_length

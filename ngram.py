@@ -1,31 +1,28 @@
 # the n-gram model used to determine if a word is spellable
-import statistics as st
-from collections import defaultdict
-from typing import List, Optional
-from string import ascii_lowercase
-import json
-import os
 import argparse
 import itertools
+import json
 import math
+import os
+import statistics as st
 import zipfile
+from collections import defaultdict
+from string import ascii_lowercase
 
 
-VALID_CHARS = list(
-    set(ascii_lowercase + "$^-'")
-)  # valid characters in the n-gram model, & for placeholder
+VALID_CHARS = list(set(ascii_lowercase + "$^-'"))  # valid characters in the n-gram model, & for placeholder
 
 
 class NGramCollection:
-    def __init__(self, ns: List[int], weights: Optional[float]):
+    def __init__(self, ns: list[int], weights: float | None):
         if weights is not None:
-            assert sum(weights) - 1.0 < 1e-6  # ensure weights sum to 1
+            assert sum(weights) - 1.0 < 1e-6  # ensure weights sum to 1 # type: ignore
         self.ns = ns
         self.models = [NGramModel(n) for n in ns]
         self.weights = weights
         self.threshold = 0.0
 
-    def train(self, words: List[str]):
+    def train(self, words: list[str]):
         for model in self.models:
             model.train(words)
         scores = []
@@ -55,7 +52,7 @@ class NGramCollection:
         if self.weights is None:
             return st.mean(scores)
         else:
-            return sum([w * s for w, s in zip(self.weights, scores)])
+            return sum([w * s for w, s in zip(self.weights, scores)])  # pyright: ignore[reportArgumentType]
 
     def isvalid(self, word: str) -> bool:
         """
@@ -63,7 +60,7 @@ class NGramCollection:
         """
         word = word.lower()
         score = self.score(word)
-        valid = score > self.threshold
+        valid = score > self.threshold  # pyright: ignore[reportOperatorIssue]
         return valid
 
     def serialize(self) -> str:
@@ -81,11 +78,11 @@ class NGramCollection:
         Deserialize the model from a json string.
         """
         ser = json.loads(ser)
-        self.weights = ser["weights"]
-        self.threshold = ser["threshold"]
-        valid_chars = ser["valid_chars"]
-        models = ser["models"]
-        self.models = {NGramModel(int(k), v, valid_chars) for k, v in models.items()}
+        self.weights = ser["weights"]  # pyright: ignore[reportArgumentType]
+        self.threshold = ser["threshold"]  # pyright: ignore[reportArgumentType]
+        valid_chars = ser["valid_chars"]  # pyright: ignore[reportArgumentType]
+        models = ser["models"]  # pyright: ignore[reportArgumentType]
+        self.models = {NGramModel(int(k), v, valid_chars) for k, v in models.items()}  # pyright: ignore[reportAttributeAccessIssue]
 
 
 class NGramModel:
@@ -94,22 +91,20 @@ class NGramModel:
         self.freq = freq  # {prefix: {appendix: count}}
         self.valid_chars = valid_chars
 
-    def _ngram(self, word: str) -> List[str]:
+    def _ngram(self, word: str) -> list[str]:
         word = word.lower()
         word = f"^{word}$"
         if len(word) < self.n:
-            word = "^"*(self.n - len(word)) + word
+            word = "^" * (self.n - len(word)) + word
         return [word[i : i + self.n] for i in range(len(word) - self.n + 1)]
 
     def _possible_ngrams(self):
         """
         Returns all possible prefix given gram number
         """
-        return [
-            "".join(x) for x in itertools.product(self.valid_chars, repeat=self.n - 1)
-        ]
+        return ["".join(x) for x in itertools.product(self.valid_chars, repeat=self.n - 1)]
 
-    def train(self, words: List[str]):
+    def train(self, words: list[str]):
         # clear & prepare the freq
         self.freq = defaultdict(lambda: defaultdict(int))
         for word in words:
@@ -129,7 +124,7 @@ class NGramModel:
         for prefix in self.freq:
             total = self.freq[prefix]["total"]
             for appendix in self.valid_chars:
-                self.freq[prefix][appendix] /= total
+                self.freq[prefix][appendix] /= total  # pyright: ignore[reportArgumentType]
                 self.freq[prefix][appendix] = round(self.freq[prefix][appendix], 4)
             # remove total
             del self.freq[prefix]["total"]
@@ -149,9 +144,7 @@ class NGramModel:
                 print(f"Warning: {prefix}-{appendix} not found in {self.n}-gram model")
                 return -float("inf")
             scores.append(
-                math.log(
-                    self.freq[prefix][appendix] + 1e-10
-                )  # add a small value to avoid log(0)
+                math.log(self.freq[prefix][appendix] + 1e-10)  # add a small value to avoid log(0)
             )
         if len(scores) == 0:
             print(f"Warning: no grams extracted in {self.n}-gram model")
@@ -171,9 +164,9 @@ class NGramModel:
         return st.mean(likelihoods)
 
 
-def load_cmudict(path: str) -> List[str]:
+def load_cmudict(path: str) -> list[str]:
     # returns words in cmudict
-    with open(path, "r") as f:
+    with open(path) as f:
         lines = f.readlines()
     words = []
     for line in lines:
@@ -189,11 +182,12 @@ def main():
     parser = argparse.ArgumentParser(description="Train or load the n-gram model.")
     parser.add_argument("--train", action="store_true", help="Train the model")
     args = parser.parse_args()
-    ngram = NGramCollection([2, 3, 4], [0.5, 0.3, 0.2])
+    ngram = NGramCollection([2, 3, 4], [0.5, 0.3, 0.2])  # pyright: ignore[reportArgumentType]
     ckpt = "vendor/ngram.json.zip"
     cmudict = "vendor/cmudict.dict"
     if os.path.exists(ckpt) and not args.train:
         from tqdm.auto import tqdm
+
         words = load_cmudict(cmudict)
         with zipfile.ZipFile(ckpt, "r", compression=zipfile.ZIP_LZMA) as z:
             with z.open("ngram.json") as f:

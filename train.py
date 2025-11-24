@@ -432,7 +432,7 @@ def train():
 
         # サンプルを表示
         sample = val_ds[randint(0, len(val_ds) - 1)]
-        src, tgt = sample  # pyright: ignore[reportGeneralTypeIssues]
+        src, _ = sample  # pyright: ignore[reportGeneralTypeIssues]
         src, pred = infer(src, model, args.p2k)
         print(f"Epoch {epoch} Sample: {src} -> {pred}")
         print(

@@ -7,11 +7,11 @@ The extracted data will be stored in a JSON file, with
 format.
 """
 
+import argparse
 import json
 import re
 from collections import defaultdict
-from typing import Dict, List
-import argparse
+
 from hp import ascii_entries
 
 
@@ -19,8 +19,8 @@ katakana_re = re.compile(r"[\u30A1-\u30F4\u30FC]+")
 en_re = re.compile(r"[a-zA-Z\-\s\+]+")
 
 
-def extract_wiki(path) -> Dict[str, List[str]]:
-    file = open(path, "r")
+def extract_wiki(path) -> dict[str, list[str]]:
+    file = open(path)
     katakana_dict = defaultdict(list)
     for line in file:
         data = json.loads(line)
@@ -64,8 +64,8 @@ def extract_wiki(path) -> Dict[str, List[str]]:
     return katakana_dict
 
 
-def extract_jmdict(path) -> Dict[str, List[str]]:
-    file = open(path, "r", encoding="euc-jp")
+def extract_jmdict(path) -> dict[str, list[str]]:
+    file = open(path, encoding="euc-jp")
     katakana_dict = defaultdict(list)
     for line in file:
         # JMDICT is a csv file with internal commas replaced by `/`.
@@ -123,8 +123,8 @@ def extract_jmdict(path) -> Dict[str, List[str]]:
 
 
 def post_processing(
-    wiki_dict: Dict[str, List[str]], jmdict_dict: Dict[str, List[str]]
-) -> Dict[str, List[str]]:
+    wiki_dict: dict[str, list[str]], jmdict_dict: dict[str, list[str]]
+) -> dict[str, list[str]]:
     global kata
     katakana_dict = defaultdict(list)
     # combine the two dictionaries
@@ -162,7 +162,7 @@ class Welford:
         return (self.S / (self.k - 1)) ** 0.5
 
 
-def filter_outliers(dict: Dict[str, List[str]]) -> Dict[str, List[str]]:
+def filter_outliers(dict: dict[str, list[str]]) -> dict[str, list[str]]:
     # calculates the mean and std of the length ratio of the katakana words / English words
     # and filters out the outliers out side of mean \pm 2 * std
     # it's because katakana dict sometimes contain short-hand katakana words

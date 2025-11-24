@@ -1,12 +1,14 @@
 # Description: Inference functions for the E2K model in numpy
-import zipfile
-import numpy as np
-from typing import Callable, List, Literal, Optional, Dict, Tuple, Union
 import importlib.resources
-from functools import partial
+import json
 import math
 import statistics as st
-import json
+import zipfile
+from collections.abc import Callable
+from functools import partial
+from typing import Literal
+
+import numpy as np
 
 
 class Linear:
@@ -39,7 +41,7 @@ class GRUCell:
         self.ih = Linear(weight_ih, bias_ih)
         self.hh = Linear(weight_hh, bias_hh)
 
-    def forward(self, x: np.ndarray, h: Optional[np.ndarray] = None) -> np.ndarray:
+    def forward(self, x: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
         """
         x: [D]
         h: [D]
@@ -76,9 +78,7 @@ class GRU:
         self.cell = cell
         self.reverse = reverse
 
-    def forward(
-        self, x, h: Optional[np.ndarray] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def forward(self, x, h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
         x: [T, D], unbatched
         """
@@ -91,7 +91,7 @@ class GRU:
         outputs = np.stack(outputs)
         if self.reverse:
             outputs = np.flip(outputs, axis=0)
-        return outputs, h
+        return outputs, h  # pyright: ignore[reportReturnType]
 
 
 class MHA:
@@ -127,12 +127,12 @@ class MHA:
         q = self.q_proj.forward(q)
         k = self.k_proj.forward(k)
         v = self.v_proj.forward(v)
-        q = np.split(q, self.num_heads, axis=-1)
-        q = np.stack(q, axis=0)
-        k = np.split(k, self.num_heads, axis=-1)
-        k = np.stack(k, axis=0)
-        v = np.split(v, self.num_heads, axis=-1)
-        v = np.stack(v, axis=0)
+        q = np.split(q, self.num_heads, axis=-1)  # type: ignore
+        q = np.stack(q, axis=0)  # type: ignore
+        k = np.split(k, self.num_heads, axis=-1)  # type: ignore
+        k = np.stack(k, axis=0)  # type: ignore
+        v = np.split(v, self.num_heads, axis=-1)  # type: ignore
+        v = np.stack(v, axis=0)  # type: ignore
         attn = np.matmul(q, np.transpose(k, (0, 2, 1)))
         attn = attn / self.scale
         attn = np.exp(attn)
@@ -178,7 +178,7 @@ def top_p(step_dec: np.ndarray, p: float, t: float):
 
 
 class S2S:
-    def __init__(self, weights: Dict[str, np.ndarray], max_len: int = 16):
+    def __init__(self, weights: dict[str, np.ndarray], max_len: int = 16):
         # fp32 is usually faster than fp16 on CPU
         new_weight = {}
         for k, v in weights.items():
@@ -212,9 +212,7 @@ class S2S:
             ),
             reverse=True,
         )
-        self.encoder_fc = Linear(
-            weights["encoder_fc.0.weight"], weights["encoder_fc.0.bias"]
-        )
+        self.encoder_fc = Linear(weights["encoder_fc.0.weight"], weights["encoder_fc.0.bias"])
         self.pre_decoder = GRU(
             GRUCell(
                 weights["pre_decoder.weight_ih_l0"],
@@ -265,11 +263,11 @@ class S2S:
             res.append(decoder(x))
             if res[-1] == self.eos_idx:
                 break
-        return res
+        return res  # pyright: ignore[reportReturnType]
 
 
 class BaseE2K:
-    def __init__(self, name: str, max_len: int = 16, model_path: Optional[str] = None):
+    def __init__(self, name: str, max_len: int = 16, model_path: str | None = None):
         """
         Args:
             name: アセット名 (model-c2k.npz など)
@@ -286,24 +284,21 @@ class BaseE2K:
         self.in_table = {c: i for i, c in enumerate(self.s2s.in_table)}
         self.out_table = self.s2s.out_table
 
-    def set_decode_strategy(self, strategy: str, **kwargs):
-        self.s2s.set_decode_strategy(strategy, **kwargs)
-
     def __call__(
         self,
-        src: Union[str, List[str]],
-        strategy: Optional[Literal["greedy", "top_k", "top_p"]] = None,
+        src: str | list[str],
+        strategy: Literal["greedy", "top_k", "top_p"] | None = None,
         *,
-        k: Optional[int] = None,
-        p: Optional[float] = None,
-        t: Optional[float] = None,
+        k: int | None = None,
+        p: float | None = None,
+        t: float | None = None,
     ) -> str:
         if isinstance(src, str):
             src = src.lower()
         src = list(filter(lambda x: x in self.in_table, src))
-        src = [self.in_table[c] for c in src]
-        src = [self.s2s.sos_idx] + src + [self.s2s.eos_idx]
-        src = np.array(src)
+        src = [self.in_table[c] for c in src]  # pyright: ignore[reportAssignmentType]
+        src = [self.s2s.sos_idx, *src, self.s2s.eos_idx]  # pyright: ignore[reportAssignmentType]
+        src = np.array(src)  # pyright: ignore[reportAssignmentType]
         match strategy:
             case "greedy" | None:
                 tgt = self.s2s.forward(src, greedy)
@@ -326,11 +321,11 @@ class BaseE2K:
 
 
 def get_asset_path(filename) -> str:
-    return importlib.resources.files("e2k.models").joinpath(filename)
+    return importlib.resources.files("e2k.models").joinpath(filename)  # pyright: ignore[reportReturnType]
 
 
 class P2K(BaseE2K):
-    def __init__(self, max_len: int = 16, model_path: Optional[str] = None):
+    def __init__(self, max_len: int = 16, model_path: str | None = None):
         """
         Args:
             max_len: 最大生成長
@@ -340,7 +335,7 @@ class P2K(BaseE2K):
 
 
 class C2K(BaseE2K):
-    def __init__(self, max_len: int = 16, model_path: Optional[str] = None):
+    def __init__(self, max_len: int = 16, model_path: str | None = None):
         """
         Args:
             max_len: 最大生成長
@@ -379,15 +374,15 @@ class AccentPredictor:
         """
         x: [T]
         """
-        x = list(filter(lambda x: x in self.in_table, x))
-        x = [self.in_table[c] for c in x]
-        x = np.array(x)
-        x = self.emb.forward(x)  # [T,N]
+        x = list(filter(lambda x: x in self.in_table, x))  # pyright: ignore[reportAssignmentType]
+        x = [self.in_table[c] for c in x]  # pyright: ignore[reportAssignmentType]
+        x = np.array(x)  # pyright: ignore[reportAssignmentType]
+        x = self.emb.forward(x)  # [T,N] # type: ignore
         _, hf = self.rnn.forward(x, None)  # [N]
         _, hr = self.rnn_rev.forward(x, None)  # [N]
         h = np.concatenate([hf, hr], axis=0)
         h = self.head.forward(h)
-        h = h[0] * x.shape[0]
+        h = h[0] * x.shape[0]  # pyright: ignore[reportAttributeAccessIssue]
         h = int(h + 0.5)  # round operation
         return h
 
@@ -407,7 +402,7 @@ class NGramModel:
         word = word.lower()
         word = f"^{word}$"
         if len(word) < self.n:
-            word = "^"*(self.n - len(word)) + word
+            word = "^" * (self.n - len(word)) + word
         ngrams = [word[i : i + self.n] for i in range(len(word) - self.n + 1)]
 
         # Calculate score for each n-gram
@@ -489,6 +484,7 @@ class NGramCollection:
 
 if __name__ == "__main__":
     import argparse
+
     from g2p_en import G2p
 
     g2p = G2p()
