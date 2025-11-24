@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from g2p_en import G2p
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader, Dataset, random_split
 from torch.utils.tensorboard import SummaryWriter
 from torcheval.metrics import BLEUScore
@@ -21,11 +21,11 @@ from hp import EOS_IDX, PAD_IDX, SOS_IDX, ascii_entries, en_phones, kanas
 
 
 SEED = 3407
-DIM = 512  # データ量が5倍になったため、モデル容量も2倍に拡大
+DIM = 256
 
 
 class Model(nn.Module):
-    def __init__(self, p2k: bool = False, dropout: float = 0.2):
+    def __init__(self, p2k: bool = False, dropout: float = 0.0):
         super().__init__()
         if p2k:
             self.e_emb = nn.Embedding(len(en_phones), DIM)
@@ -43,6 +43,20 @@ class Model(nn.Module):
         self.attn = nn.MultiheadAttention(DIM, 4, batch_first=True, dropout=dropout)
         self.fc = nn.Linear(DIM, len(kanas))
         self.dropout = nn.Dropout(dropout)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+        # RNN 系は直交行列で初期化（学習安定化の定石）
+        for name, param in self.named_parameters():
+            if "weight_hh" in name:
+                nn.init.orthogonal_(param)
+            elif "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
 
     def forward(self, src, tgt, src_mask=None, tgt_mask=None):
         """
@@ -267,26 +281,31 @@ def train():
     parser.add_argument(
         "--dim",
         type=int,
-        default=512,
-        help="Model dimension (default: 512 for training, use 256 for fast inference)",
+        default=256,
+        help="Model dimension (default: 256, optimized for speed and accuracy balance)",
     )
     parser.add_argument(
-        "--epochs", type=int, default=50, help="Number of epochs (default: 50, optimized for 5x larger dataset)"
+        "--epochs", type=int, default=50, help="Number of epochs (default: 50, sufficient for ExponentialLR)"
     )
     parser.add_argument(
-        "--batch-size", type=int, default=128, help="Batch size (default: 128, optimized for 5x larger dataset)"
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Batch size (default: 64, small batch helps generalization for small models)",
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=8e-4,
-        help="Learning rate (default: 8e-4, slightly reduced for stability with larger dataset)",
+        default=1e-3,
+        help="Learning rate (default: 1e-3)",
     )
     parser.add_argument(
-        "--patience", type=int, default=8, help="Early stopping patience (default: 8, increased for larger dataset)"
+        "--patience", type=int, default=10, help="Early stopping patience (default: 10, increased for longer training)"
     )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping threshold (default: 1.0)")
-    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate (default: 0.2)")
+    parser.add_argument(
+        "--dropout", type=float, default=0.0, help="Dropout rate (default: 0.0, maximize capacity for dim=256)"
+    )
 
     # 知識蒸留用の引数
     parser.add_argument("--teacher", type=str, default=None, help="Path to teacher model for knowledge distillation")
@@ -351,10 +370,15 @@ def train():
         collate_fn=partial(collate_fn, device=device),
     )
 
+    # Label Smoothing: Removed to allow model to fully trust the high-quality dataset
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    # ReduceLROnPlateau を使用して、validation loss が改善しない場合に学習率を下げる
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    # Optimizer: AdamW with 0 weight decay to allow full memorization for small model
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+
+    # Scheduler: ExponentialLR enforces convergence (Simulating the original aggressive strategy)
+    # gamma=0.9 means LR decays to ~35% after 10 epochs, ~12% after 20 epochs.
+    scheduler = ExponentialLR(optimizer, gamma=0.9)
+
     writer = SummaryWriter()
 
     best_val_loss = float("inf")
@@ -426,7 +450,7 @@ def train():
 
         # 学習率スケジューラーを更新
         old_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_loss)
+        scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
         writer.add_scalar("LearningRate", current_lr, epoch)
 
