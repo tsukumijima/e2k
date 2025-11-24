@@ -182,7 +182,5 @@ vendor/*
 *.zip
 # tensorboard logs
 runs/
-# really, who make this into the git?
-uv.lock
 # jupyter notebooks
 *.ipynb

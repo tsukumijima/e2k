@@ -20,7 +20,7 @@ dev = [
   "g2p-en>=2.1.0",
   "safetensors>=0.5.2",
   "tensorboard>=2.18.0",
-  "torch>=2.5.0",
+  "torch>=2.5.0,<2.9.0",
   "torcheval>=0.0.7",
   "tqdm>=4.67.1",
   "matplotlib>=3.10.3",
@@ -28,18 +28,20 @@ dev = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.6.0"]
-cu121 = ["torch>=2.5.0"]
-cu124 = ["torch>=2.6.0"]
+cpu = ["torch>=2.6.0,<2.9.0"]
+cu121 = ["torch>=2.5.0,<2.9.0"]
+cu124 = ["torch>=2.6.0,<2.9.0"]
+cu126 = ["torch>=2.6.0,<2.9.0"]
 
 [tool.uv]
-conflicts = [[{ extra = "cpu" }, { extra = "cu121" }, { extra = "cu124" }]]
+conflicts = [[{ extra = "cpu" }, { extra = "cu121" }, { extra = "cu124" }, { extra = "cu126" }]]
 
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu121", extra = "cu121" },
   { index = "pytorch-cu124", extra = "cu124" },
+  { index = "pytorch-cu126", extra = "cu126" },
 ]
 
 [[tool.uv.index]]
@@ -55,6 +57,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [tool.setuptools.packages.find]
