@@ -59,7 +59,7 @@ def tensor2str(t):
 
 
 for i in tqdm(range(len(test_ds))):
-    eng, kata = test_ds[i]  # type: ignore
+    eng, kata = test_ds[i]  # pyright: ignore[reportGeneralTypeIssues]
     res = model.inference(eng)
     pred_kana = tensor2str(res)
     kana = [[tensor2str(k) for k in kata]]
