@@ -276,7 +276,7 @@ def distillation_loss(student_logits, teacher_logits, labels, T, alpha):
 def train():
     torch.manual_seed(SEED)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default="data.jsonl")
+    parser.add_argument("--data", type=str, default="vendor/katakana_dict.jsonl")
     parser.add_argument("--p2k", action="store_true")
     parser.add_argument(
         "--dim",

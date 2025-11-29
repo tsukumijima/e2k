@@ -12,7 +12,7 @@ from train import Model, MyDataset, random_split
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--data", type=str, default="data.jsonl")
+parser.add_argument("--data", type=str, default="vendor/katakana_dict.jsonl")
 parser.add_argument("--model", type=str, required=True)
 parser.add_argument("--p2k", action="store_true")
 parser.add_argument("--dim", type=int, default=None, help="Model dimension (auto-detected if not specified)")
