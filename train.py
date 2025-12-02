@@ -2,6 +2,7 @@
 # English phonemes
 import argparse
 import json
+import random
 from datetime import datetime
 from functools import partial
 from os import path
@@ -13,7 +14,7 @@ from g2p_en import G2p
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim.lr_scheduler import ExponentialLR
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Sampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 from torcheval.metrics import BLEUScore
 
@@ -108,6 +109,7 @@ class MyDataset(Dataset):
         """
         reads a json line file
         """
+
         super().__init__()
         self.g2p = G2p()
         with open(path) as file:
@@ -124,6 +126,18 @@ class MyDataset(Dataset):
         self.cache_kata = {}
         self.p2k_flag = p2k
         self.return_full = False
+
+        # ローマ字/英語のインデックスを分離して保持
+        # 2段階学習（Phased Training）で使用
+        self.romaji_indices: list[int] = []
+        self.english_indices: list[int] = []
+        for idx, item in enumerate(self.data):
+            if item.get("is_romaji", False):
+                self.romaji_indices.append(idx)
+            else:
+                self.english_indices.append(idx)
+
+        print(f"Dataset loaded: {len(self.english_indices)} English, {len(self.romaji_indices)} Romaji")
 
     def __len__(self):
         return len(self.data)
@@ -180,6 +194,93 @@ class MyDataset(Dataset):
             return en, kata
 
 
+class PhasedSampler(Sampler):
+    """
+    2段階学習用サンプラー
+
+    Phase 1: 英語データのみ（romaji_ratio = 0.0）
+    Phase 2: 英語 + ローマ字（romaji_ratio を徐々に増加）
+
+    ローマ字データはアップサンプリング（循環使用）され、英語データと混合される。
+    これにより、モデルは英語の基盤を確立した後、ローマ字パターンを追加学習できる。
+
+    Args:
+        dataset: MyDataset インスタンス（english_indices, romaji_indices を持つ）
+        romaji_ratio: 全体に対するローマ字サンプルの比率（0.0〜1.0）
+    """
+
+    def __init__(self, dataset, romaji_ratio: float = 0.0):
+        self.english_indices = dataset.english_indices.copy()
+        self.romaji_indices = dataset.romaji_indices.copy()
+        self.romaji_ratio = romaji_ratio
+
+    def set_romaji_ratio(self, ratio: float):
+        """エポックごとにローマ字比率を更新"""
+
+        self.romaji_ratio = min(1.0, max(0.0, ratio))
+
+    def __iter__(self):
+        # 英語データをシャッフル
+        english_shuffled = self.english_indices.copy()
+        random.shuffle(english_shuffled)
+
+        # Phase 1: ローマ字比率が 0 または ローマ字データがない場合は英語のみ
+        if self.romaji_ratio <= 0 or len(self.romaji_indices) == 0:
+            return iter(english_shuffled)
+
+        # Phase 2: 英語 + ローマ字の混合
+        # ローマ字の必要数を計算（比率から逆算）
+        # romaji_ratio = n_romaji / (n_english + n_romaji) を満たす n_romaji を求める
+        n_english = len(english_shuffled)
+        n_romaji_needed = int(n_english * self.romaji_ratio / (1 - self.romaji_ratio))
+
+        # ローマ字をアップサンプリング（循環使用）
+        romaji_shuffled = self.romaji_indices.copy()
+        random.shuffle(romaji_shuffled)
+        n_repeats = (n_romaji_needed // len(romaji_shuffled)) + 1
+        romaji_upsampled = (romaji_shuffled * n_repeats)[:n_romaji_needed]
+        random.shuffle(romaji_upsampled)
+
+        # 混合してシャッフル
+        combined = english_shuffled + romaji_upsampled
+        random.shuffle(combined)
+
+        return iter(combined)
+
+    def __len__(self):
+        if self.romaji_ratio <= 0:
+            return len(self.english_indices)
+        n_english = len(self.english_indices)
+        n_romaji = int(n_english * self.romaji_ratio / (1 - self.romaji_ratio))
+        return n_english + n_romaji
+
+
+def get_romaji_ratio(epoch: int, phase1_epochs: int, final_ratio: float, rampup_epochs: int) -> float:
+    """
+    2段階学習におけるローマ字比率を計算する。
+
+    Phase 1 (epoch <= phase1_epochs): 0.0（英語のみ）
+    Phase 2 (epoch > phase1_epochs): 0.0 → final_ratio（徐々に増加）
+
+    Args:
+        epoch: 現在のエポック（1-indexed）
+        phase1_epochs: Phase 1 のエポック数（英語のみ学習する期間）
+        final_ratio: Phase 2 での最終的なローマ字比率
+        rampup_epochs: ローマ字比率が 0 から final_ratio に達するまでのエポック数
+
+    Returns:
+        現在のエポックでのローマ字比率（0.0〜final_ratio）
+    """
+
+    # Phase 1: 英語のみ
+    if epoch <= phase1_epochs:
+        return 0.0
+
+    # Phase 2: 徐々にローマ字を導入
+    progress = min(1.0, (epoch - phase1_epochs) / rampup_epochs)
+    return final_ratio * progress
+
+
 def lens2mask(lens, max_len):
     mask = torch.zeros(len(lens), max_len).bool()
     for i, le in enumerate(lens):
@@ -215,6 +316,82 @@ def infer(src, model, p2k):
 
 def tensor2str(t):
     return " ".join([str(int(x)) for x in t])
+
+
+def evaluate_by_task(
+    model: Model,
+    dataset: MyDataset,
+    val_indices,
+    device: torch.device,
+    sample_size: int = 1000,
+) -> dict:
+    """
+    英語タスクとローマ字タスクを分離して評価する。
+
+    各タスクの BLEU スコアを個別に計算し、モデルのタスク別性能を監視する。
+    これにより、Phase 2 でローマ字を導入した際の英語性能への影響を検知できる。
+
+    Args:
+        model: 評価対象のモデル
+        dataset: 評価用データセット（is_romaji 情報を含む）
+        val_indices: バリデーション用インデックスのリスト
+        device: 使用するデバイス
+        sample_size: 評価に使用するサンプル数
+
+    Returns:
+        dict: {
+            'english_bleu': float,  # 英語タスクの BLEU スコア
+            'romaji_bleu': float,   # ローマ字タスクの BLEU スコア
+            'overall_bleu': float,  # 全体の BLEU スコア
+            'english_count': int,   # 評価した英語サンプル数
+            'romaji_count': int,    # 評価したローマ字サンプル数
+        }
+    """
+
+    bleu_english = BLEUScore(n_gram=3)
+    bleu_romaji = BLEUScore(n_gram=3)
+    bleu_overall = BLEUScore(n_gram=3)
+
+    english_count = 0
+    romaji_count = 0
+
+    # シード固定でサンプリング（再現性のため）
+    torch.manual_seed(SEED)
+    actual_sample_size = min(sample_size, len(val_indices))
+    sample_indices = torch.randperm(len(val_indices))[:actual_sample_size].tolist()
+
+    dataset.set_return_full(True)
+    model.eval()
+
+    with torch.no_grad():
+        for idx in sample_indices:
+            original_idx = val_indices[idx]
+            eng, kata_list = dataset[original_idx]
+            item = dataset.data[original_idx]
+            is_romaji = item.get("is_romaji", False)
+
+            res = model.inference(eng)
+            pred_kana = tensor2str(res)
+            kana = [[tensor2str(k) for k in kata_list]]
+
+            bleu_overall.update(pred_kana, kana)
+
+            if is_romaji:
+                bleu_romaji.update(pred_kana, kana)
+                romaji_count += 1
+            else:
+                bleu_english.update(pred_kana, kana)
+                english_count += 1
+
+    dataset.set_return_full(False)
+
+    return {
+        "english_bleu": bleu_english.compute().item() if english_count > 0 else 0.0,
+        "romaji_bleu": bleu_romaji.compute().item() if romaji_count > 0 else 0.0,
+        "overall_bleu": bleu_overall.compute().item(),
+        "english_count": english_count,
+        "romaji_count": romaji_count,
+    }
 
 
 def get_timestamp_suffix() -> str:
@@ -312,6 +489,28 @@ def train():
     parser.add_argument("--distill-temp", type=float, default=2.0, help="Temperature for distillation")
     parser.add_argument("--distill-alpha", type=float, default=0.5, help="Weight for distillation loss (0.0-1.0)")
 
+    # 2段階学習（Phased Training）用の引数
+    # Phase 1: 英語のみで学習 → Phase 2: ローマ字を徐々に混合
+    # デフォルト値は最適化済み
+    parser.add_argument(
+        "--phase1-epochs",
+        type=int,
+        default=10,
+        help="Number of epochs for Phase 1 (English only). Set to 0 to disable phased training (default: 10)",
+    )
+    parser.add_argument(
+        "--romaji-ratio",
+        type=float,
+        default=0.2,
+        help="Final romaji ratio in Phase 2 (default: 0.2 = 20%% of batch)",
+    )
+    parser.add_argument(
+        "--rampup-epochs",
+        type=int,
+        default=10,
+        help="Number of epochs to ramp up romaji ratio from 0 to final (default: 10)",
+    )
+
     parser.add_argument(
         "--inference-dim",
         type=int,
@@ -357,12 +556,49 @@ def train():
     val_dataset_full = MyDataset(args.data, device, p2k=args.p2k)
     val_indices = val_ds.indices
 
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=partial(collate_fn, device=device),
-    )
+    # 2段階学習（Phased Training）の設定
+    # phase1_epochs > 0 の場合は PhasedSampler を使用
+    is_phased_training = args.phase1_epochs > 0
+    phased_sampler = None
+
+    if is_phased_training:
+        # PhasedSampler を使用（Phase 1 は英語のみ、Phase 2 はローマ字を徐々に混合）
+        # train_ds は Subset なので、元のデータセットからサンプラーを作成
+        # Subset のインデックスを使ってサンプラーのインデックスをマッピングする必要がある
+        train_indices = train_ds.indices
+
+        # 元データセットのインデックスから train_ds 用のインデックスに変換
+        train_english_indices = [i for i, idx in enumerate(train_indices) if idx in set(dataset.english_indices)]
+        train_romaji_indices = [i for i, idx in enumerate(train_indices) if idx in set(dataset.romaji_indices)]
+
+        # PhasedSampler 用のダミーデータセットオブジェクト
+        class _SamplerDataset:
+            def __init__(self, english_indices, romaji_indices):
+                self.english_indices = english_indices
+                self.romaji_indices = romaji_indices
+
+        sampler_dataset = _SamplerDataset(train_english_indices, train_romaji_indices)
+        phased_sampler = PhasedSampler(sampler_dataset, romaji_ratio=0.0)
+
+        print(f"Phased training enabled: Phase 1 = {args.phase1_epochs} epochs (English only)")
+        print(f"  Phase 2: romaji ratio 0 -> {args.romaji_ratio:.0%} over {args.rampup_epochs} epochs")
+        print(f"  Train set: {len(train_english_indices)} English, {len(train_romaji_indices)} Romaji")
+
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            sampler=phased_sampler,
+            collate_fn=partial(collate_fn, device=device),
+        )
+    else:
+        # 従来の動作（shuffle=True）
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=partial(collate_fn, device=device),
+        )
+
     val_dl = DataLoader(
         val_ds,
         batch_size=args.batch_size,
@@ -387,7 +623,24 @@ def train():
     best_model_state = None
 
     steps = 0
+    phase2_started = False
     for epoch in range(1, args.epochs + 1):
+        # 2段階学習: エポックごとにローマ字比率を更新
+        if is_phased_training and phased_sampler is not None:
+            romaji_ratio = get_romaji_ratio(
+                epoch,
+                args.phase1_epochs,
+                args.romaji_ratio,
+                args.rampup_epochs,
+            )
+            phased_sampler.set_romaji_ratio(romaji_ratio)
+
+            # Phase 2 開始時にスケジューラーを調整（より緩やかな減衰に切り替え）
+            if epoch == args.phase1_epochs + 1 and not phase2_started:
+                phase2_started = True
+                print("=== Phase 2 started: mixing romaji data (gamma=0.95) ===")
+                scheduler = ExponentialLR(optimizer, gamma=0.95)
+
         model.train()
         epoch_train_loss = 0.0
         train_batches = 0
@@ -428,25 +681,41 @@ def train():
         writer.add_scalar("Loss/train_epoch", epoch_train_loss / train_batches, epoch)
 
         # BLEU スコアを計算（サンプリングして計算）
-        # 公平な比較のため、シードを固定してサンプリング
-        bleu = BLEUScore(n_gram=3)
-        sample_size = min(1000, len(val_ds))
-        # シードを固定して同じサンプルを毎回評価
-        torch.manual_seed(SEED)
-        sample_indices = torch.randperm(len(val_ds))[:sample_size].tolist()
-        # return_full を一時的に有効化
-        val_dataset_full.set_return_full(True)
-        with torch.no_grad():
-            for idx in sample_indices:
-                original_idx = val_indices[idx]
-                eng, kata_list = val_dataset_full[original_idx]
-                res = model.inference(eng)
-                pred_kana = tensor2str(res)
-                kana = [[tensor2str(k) for k in kata_list]]
-                bleu.update(pred_kana, kana)
-        val_dataset_full.set_return_full(False)
-        bleu_score = bleu.compute().item()
-        writer.add_scalar("BLEU/val", bleu_score, epoch)
+        # 2段階学習が有効な場合はタスク別評価を実施
+        if is_phased_training:
+            # タスク別評価（英語/ローマ字を分離して評価）
+            metrics = evaluate_by_task(model, val_dataset_full, val_indices, device)
+            bleu_score = metrics["overall_bleu"]
+            english_bleu = metrics["english_bleu"]
+            romaji_bleu = metrics["romaji_bleu"]
+
+            writer.add_scalar("BLEU/val", bleu_score, epoch)
+            writer.add_scalar("BLEU/english", english_bleu, epoch)
+            writer.add_scalar("BLEU/romaji", romaji_bleu, epoch)
+            writer.add_scalar("Curriculum/romaji_ratio", romaji_ratio, epoch)
+        else:
+            # 従来の評価（全体 BLEU のみ）
+            # 公平な比較のため、シードを固定してサンプリング
+            bleu = BLEUScore(n_gram=3)
+            sample_size = min(1000, len(val_ds))
+            # シードを固定して同じサンプルを毎回評価
+            torch.manual_seed(SEED)
+            sample_indices = torch.randperm(len(val_ds))[:sample_size].tolist()
+            # return_full を一時的に有効化
+            val_dataset_full.set_return_full(True)
+            with torch.no_grad():
+                for idx in sample_indices:
+                    original_idx = val_indices[idx]
+                    eng, kata_list = val_dataset_full[original_idx]
+                    res = model.inference(eng)
+                    pred_kana = tensor2str(res)
+                    kana = [[tensor2str(k) for k in kata_list]]
+                    bleu.update(pred_kana, kana)
+            val_dataset_full.set_return_full(False)
+            bleu_score = bleu.compute().item()
+            writer.add_scalar("BLEU/val", bleu_score, epoch)
+            english_bleu = None
+            romaji_bleu = None
 
         # 学習率スケジューラーを更新
         old_lr = optimizer.param_groups[0]["lr"]
@@ -459,9 +728,26 @@ def train():
         src, _ = sample  # pyright: ignore[reportGeneralTypeIssues]
         src, pred = infer(src, model, args.p2k)
         print(f"Epoch {epoch} Sample: {src} -> {pred}")
-        print(
-            f"Epoch {epoch} Train Loss: {epoch_train_loss / train_batches:.4f}, Val Loss: {val_loss:.4f}, BLEU: {bleu_score:.4f}, LR: {current_lr:.2e}"
-        )
+
+        # 2段階学習の場合は詳細な情報を表示
+        if is_phased_training:
+            phase_str = (
+                "Phase 1 (English only)" if epoch <= args.phase1_epochs else f"Phase 2 (Romaji: {romaji_ratio:.1%})"
+            )
+            print(
+                f"Epoch {epoch} [{phase_str}] Train Loss: {epoch_train_loss / train_batches:.4f}, Val Loss: {val_loss:.4f}"
+            )
+            print(
+                f"  Overall BLEU: {bleu_score:.4f}, English BLEU: {english_bleu:.4f}, Romaji BLEU: {romaji_bleu:.4f}, LR: {current_lr:.2e}"
+            )
+
+            # 英語 BLEU が大幅に低下したら警告
+            if epoch > args.phase1_epochs and english_bleu is not None and english_bleu < 0.92:
+                print("  Warning: English BLEU dropped below 0.92!")
+        else:
+            print(
+                f"Epoch {epoch} Train Loss: {epoch_train_loss / train_batches:.4f}, Val Loss: {val_loss:.4f}, BLEU: {bleu_score:.4f}, LR: {current_lr:.2e}"
+            )
 
         # 学習率が変更された場合は表示
         if old_lr != current_lr:
